@@ -6,3 +6,4 @@ docs/
 .env
 .DS_Store
 .idea
+output/

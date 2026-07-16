@@ -3,7 +3,7 @@
 # A research -> draft -> critique -> revise pipeline for short-form dev content.
 # Runs on Gemini by default, with automatic fallback to a local Ollama model
 # if Gemini fails (rate limits, 503s, network issues, etc).
-
+import time
 import os
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -162,16 +162,32 @@ def to_text(content) -> str:
         return "\n".join(parts)
     return str(content)
 
-def invoke_with_fallback(make_agent_fn, content: str, primary="gemini", fallback="ollama") -> str:
+def invoke_with_fallback(make_agent_fn, content: str, primary="gemini", fallback="ollama", tracker=None, step_name="") -> str:
     providers_to_try = [primary, fallback]
     last_error = None
 
     for provider in providers_to_try:
+        start = time.time()
         try:
             agent = make_agent_fn(get_model_for(provider))
             result = agent.invoke({"messages": [{"role": "user", "content": content}]})
+            duration = time.time() - start
+            # Sum token usage across every AI message in this step — a single
+            # agent.invoke() can involve several LLM calls internally (tool
+            # calls, retries), each reporting its own usage_metadata.
+            input_tokens = output_tokens = 0
+            for m in result["messages"]:
+                usage = getattr(m, "usage_metadata", None)
+                if usage:
+                    input_tokens += usage.get("input_tokens", 0)
+                    output_tokens += usage.get("output_tokens", 0)
+
+            if tracker:
+                tracker.record(step_name, provider, duration, input_tokens, output_tokens, success=True)
             return to_text(result["messages"][-1].content)
         except Exception as e:
+            if tracker:
+                tracker.record(step_name, provider, time.time() - start, 0, 0, success=False)
             last_error = e
             print(f"⚠️  {provider} failed ({type(e).__name__}: {e})")
 
@@ -197,18 +213,18 @@ def parse_eval(eval_text: str) -> bool:
     return "PASS" in first_line and "FAIL" not in first_line
 
 
-def run_pipeline(topic: str, max_revision_attempts: int = 2) -> str:
+def run_pipeline(topic: str, tracker=None,max_revision_attempts: int = 2) -> str:
     print(f"[1/5] Researching: {topic}")
-    research_notes = invoke_with_fallback(make_researcher, topic)
+    research_notes = invoke_with_fallback(make_researcher, topic,tracker=tracker)
 
     print("[2/5] Drafting script...")
-    draft = invoke_with_fallback(make_writer, research_notes)
+    draft = invoke_with_fallback(make_writer, research_notes,tracker=tracker)
 
     print("[3/5] Critiquing draft...")
-    critique = invoke_with_fallback(make_critic, draft)
+    critique = invoke_with_fallback(make_critic, draft,tracker=tracker)
 
     print("[4/5] Revising based on feedback...")
-    script = invoke_with_fallback(make_reviser, f"DRAFT:\n{draft}\n\nCRITIQUE:\n{critique}")
+    script = invoke_with_fallback(make_reviser, f"DRAFT:\n{draft}\n\nCRITIQUE:\n{critique}",tracker=tracker)
 
     print("[5/5] Fact-checking final script against research...")
     eval_text = ""
@@ -216,6 +232,7 @@ def run_pipeline(topic: str, max_revision_attempts: int = 2) -> str:
         eval_text = invoke_with_fallback(
             make_evaluator,
             f"RESEARCH NOTES:\n{research_notes}\n\nSCRIPT TO CHECK:\n{script}",
+            tracker=tracker
         )
         if parse_eval(eval_text):
             print(f"    ✅ Passed fact-check (attempt {attempt})")
@@ -225,7 +242,7 @@ def run_pipeline(topic: str, max_revision_attempts: int = 2) -> str:
         if attempt < max_revision_attempts:
             print("    Regenerating script to address issues...")
             script = invoke_with_fallback(
-                make_reviser, f"DRAFT:\n{script}\n\nCRITIQUE:\n{eval_text}"
+                make_reviser, f"DRAFT:\n{script}\n\nCRITIQUE:\n{eval_text}",tracker=tracker
             )
 
     # Bounded, same principle as recursion_limit back in stage 3 — don't loop

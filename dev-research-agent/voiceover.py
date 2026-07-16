@@ -13,6 +13,38 @@ from chatterbox.tts import ChatterboxTTS
 
 MAX_CHUNK_CHARS = 250  # conservative — well under where longer-text issues tend to show up
 
+def clean_script_for_voiceover(script: str) -> str:
+    """
+    Strip everything from a script that's meant to be read by a human
+    editor/creator but not spoken aloud: stage directions, section labels,
+    and code. Without this, a TTS engine reads markdown syntax and video
+    directions literally.
+    """
+    text = script
+
+    # Fenced code blocks (```...```) — entirely visual, never spoken.
+    # Must run before line-based cleanup, since code can span multiple lines.
+    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+
+    # Whole-line stage directions: a line that's just a parenthetical,
+    # optionally bolded — e.g. **(Video opens with...)**
+    text = re.sub(r"^\s*\*{0,2}\(.*?\)\*{0,2}\s*$", "", text, flags=re.MULTILINE)
+
+    # Section labels at the start of a line — **Hook:**, **Point 1:**,
+    # **Closing:** — strip the label, keep whatever spoken text follows it
+    text = re.sub(r"^\*\*[^*\n]+:\*\*\s*", "", text, flags=re.MULTILINE)
+
+    # Any remaining bold/italic markdown — keep the inner text, drop the markers
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.*?)\*", r"\1", text)
+
+    # Inline code — `useTransition` -> useTransition (keep the word, not the backticks)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+
+    # Collapse to clean, single-spaced narration text
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return " ".join(lines)
+
 
 def split_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
     """Split text into chunks at sentence boundaries, each under max_chars."""
@@ -40,6 +72,7 @@ def generate_voiceover(
     print("Loading Chatterbox model...")
     model = ChatterboxTTS.from_pretrained(device=device)
 
+    narration = clean_script_for_voiceover(script_text)
     chunks = split_into_chunks(script_text)
     print(f"Split script into {len(chunks)} chunk(s)")
 
