@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Runs main.py with this project's venv, regardless of the caller's cwd —
+# so `videogen "some topic"` works the same from anywhere once symlinked
+# onto PATH (see ~/.local/bin/videogen). Resolves through the symlink
+# itself first (BSD `readlink` has no `-f`, so loop it manually) since
+# BASH_SOURCE would otherwise point at the symlink's own directory.
+set -e
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+# main.py and its imports (output/<slug>/, the default reference voice
+# clip) use paths relative to the project root, not the caller's cwd —
+# cd there first so `videogen` behaves the same from anywhere.
+cd "$DIR"
+exec "$DIR/venv/bin/python3" "$DIR/main.py" "$@"

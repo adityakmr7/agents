@@ -67,8 +67,12 @@ langsmith==0.10.5
 lazy-loader==0.5
 librosa==0.11.0
 llvmlite==0.48.0
+httpx-sse==0.4.3
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
+mcp==1.28.1
 mdurl==0.1.2
 ml_dtypes==0.5.4
 mpmath==1.3.0
@@ -96,9 +100,11 @@ pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pycparser==3.0
 pydantic==2.13.4
+pydantic-settings==2.14.2
 pydantic_core==2.46.4
 pydub==0.25.1
 Pygments==2.20.0
+pyjwt==2.13.0
 pykakasi==2.3.0
 pyloudnorm==0.2.0
 python-dateutil==2.9.0.post0
@@ -107,11 +113,13 @@ python-dotenv==1.2.2
 python-multipart==0.0.32
 pytz==2026.2
 PyYAML==6.0.3
+referencing==0.37.0
 regex==2026.7.10
 requests==2.34.2
 requests-toolbelt==1.0.0
 resemble-perth==1.0.1
 rich==15.0.0
+rpds-py==2026.6.3
 s3tokenizer==0.3.0
 safehttpx==0.1.7
 safetensors==0.5.3
@@ -126,6 +134,7 @@ soundfile==0.14.0
 soxr==1.1.0
 spacy_pkuseg==1.0.1
 srsly==2.5.3
+sse-starlette==3.4.5
 standard-aifc==3.13.0
 standard-chunk==3.13.0
 standard-sunau==3.13.0

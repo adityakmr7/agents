@@ -73,7 +73,7 @@ def generate_voiceover(
     model = ChatterboxTTS.from_pretrained(device=device)
 
     narration = clean_script_for_voiceover(script_text)
-    chunks = split_into_chunks(script_text)
+    chunks = split_into_chunks(narration)
     print(f"Split script into {len(chunks)} chunk(s)")
 
     audio_segments = []
