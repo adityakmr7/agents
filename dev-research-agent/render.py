@@ -186,3 +186,58 @@ def render_shots_to_video(
 
     _run_remotion_render("ScreenplayVideo", out_path, props_path)
     return str(out_path)
+
+
+def render_reel(
+    shots_with_assets: list[dict],
+    audio_path: str,
+    topic: str = "",
+    slug: str | None = None,
+) -> str:
+    """MCP-tool entry point for the new InstagramReel composition.
+
+    Each shot in shots_with_assets carries the same fields as ScreenplayShot
+    plus two new ones added by video_composer._merge_shots_and_assets():
+      - assetFile: str | None  — Remotion-relative path, e.g.
+                                 "assets/<slug>/shot-00-code.mp4"
+      - assetType: "photo" | "video" | "placeholder"
+      - credit: str | None     — photographer/videographer attribution
+
+    Assets must already be staged into Remotion's public/assets/<slug>/
+    folder before calling this (video_composer._stage_assets() handles that
+    in the compose_instagram_video() flow; the MCP tool hunt_assets() does
+    it separately for the Claude Desktop path).
+
+    Renders through InstagramReel (1080×1920, Ken Burns background, karaoke
+    captions, progress bar) rather than ScreenplayVideo or NarratedVideo.
+    """
+    audio_src = Path(audio_path)
+    slug = slug or audio_src.stem
+    audio_filename = f"{slug}.wav"
+
+    dest = REMOTION_PROJECT / "public" / audio_filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(audio_src, dest)
+    print(f"Copied voiceover to {dest}")
+
+    # Clean narration text in each shot — same as every other render entry
+    # point, strips markdown before it lands on screen.
+    cleaned_shots = [
+        {**shot, "text": clean_script_for_voiceover(shot.get("text", ""))}
+        for shot in shots_with_assets
+    ]
+
+    props_path = REMOTION_PROJECT / f"{slug}-reel-props.json"
+    props_path.write_text(json.dumps({
+        "audioFileName": audio_filename,
+        "shots": cleaned_shots,
+        "topic": topic or slug.replace("-", " ").replace("_", " ").title(),
+    }))
+
+    out_dir = Path(__file__).resolve().parent / "output" / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "reel.mp4"
+    print(f"Rendering Instagram reel to {out_path}...")
+
+    _run_remotion_render("InstagramReel", out_path, props_path)
+    return str(out_path)

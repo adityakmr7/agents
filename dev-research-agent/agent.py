@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from langchain_tavily import TavilySearch
 
@@ -37,13 +38,25 @@ def search_web(query: str) -> str:
 # ─────────────────────────────────────────────────────────────
 
 def get_model_for(provider: str):
-    """Build a model client for the given provider name ('gemini' or 'ollama')."""
+    """Build a model client for the given provider name ('gemini', 'ollama', or 'groq')."""
     if provider == "ollama":
         model_name = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
         return ChatOllama(
             model=model_name,
             temperature=0,
             timeout=30,       # fail fast instead of hanging on a stuck connection
+            max_retries=2,
+        )
+    if provider == "groq":
+        # Free tier, cloud-hosted (no local app to keep running unlike
+        # Ollama), added specifically because Ollama-not-running + a
+        # Gemini 503 (Google's servers overloaded, not a quota issue) can
+        # both fail at once — a real observed failure, not hypothetical.
+        model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        return ChatGroq(
+            model=model_name,
+            temperature=0,
+            timeout=30,
             max_retries=2,
         )
     # default: gemini
@@ -133,6 +146,39 @@ def make_evaluator(model):
         ),
     )
 
+def make_asset_analyst(model):
+    """
+    Factory: returns an agent that reads a finished script and outputs a JSON
+    array of per-shot visual keyword queries for the Pexels asset fetch.
+
+    One query per shot: {shot_index, keyword (≤4 words), asset_type}.
+    Returns ONLY valid JSON — no markdown, no preamble. The asset_hunter
+    module strips fenced code block wrappers defensively, but the prompt
+    explicitly discourages them.
+    """
+    return create_agent(
+        model=model,
+        tools=[],
+        system_prompt=(
+            "You are a visual asset coordinator for short-form Instagram Reels "
+            "about developer topics.\n\n"
+            "Given a video script, break it into shots (one per distinct point or "
+            "sentence group) and for EACH shot produce ONE short Pexels search "
+            "keyword that would find a visually relevant background image or video.\n\n"
+            "Rules:\n"
+            "- Keep each keyword under 4 words — shorter queries get better results.\n"
+            "- For coding/technical points: 'developer typing code', 'laptop dark screen'.\n"
+            "- For conceptual points: 'fast loading app', 'smooth animation'.\n"
+            "- NEVER use framework names (React, Vue, etc.) as keywords — Pexels has no "
+            "relevant results for those.\n"
+            "- asset_type must be either 'photo' or 'video'.\n\n"
+            "Your FINAL message must be ONLY a valid JSON array, no markdown, no "
+            "preamble. Example:\n"
+            '[{"shot_index":0,"keyword":"developer typing code","asset_type":"video"},'
+            '{"shot_index":1,"keyword":"smooth app animation","asset_type":"video"}]'
+        ),
+    )
+
 # ─────────────────────────────────────────────────────────────
 # FALLBACK WRAPPER
 #
@@ -162,8 +208,19 @@ def to_text(content) -> str:
         return "\n".join(parts)
     return str(content)
 
-def invoke_with_fallback(make_agent_fn, content: str, primary="gemini", fallback="ollama", tracker=None, step_name="") -> str:
+def invoke_with_fallback(
+    make_agent_fn, content: str, primary="gemini", fallback="ollama",
+    fallback2: str | None = None, tracker=None, step_name="",
+) -> str:
+    """fallback2 is optional and additive — every existing call site keeps
+    its original 2-provider chain unless it explicitly opts into a third
+    (e.g. asset_hunter.py's keyword extraction uses ollama -> groq ->
+    gemini, added after a real run where Ollama wasn't running AND
+    Gemini's fallback returned a 503 (server overload), failing both
+    providers in the default 2-chain at once)."""
     providers_to_try = [primary, fallback]
+    if fallback2:
+        providers_to_try.append(fallback2)
     last_error = None
 
     for provider in providers_to_try:

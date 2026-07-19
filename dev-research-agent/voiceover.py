@@ -79,8 +79,31 @@ def generate_voiceover(
     output_path: str = "voiceover.wav",
     device: str = "mps",
     model: ChatterboxTTS | None = None,
+    exaggeration: float = 0.7,
+    cfg_weight: float = 0.3,
+    temperature: float = 0.75,
 ) -> str:
-    """Generate a voiceover from script text, cloned in the voice from reference_path."""
+    """Generate a voiceover from script text, cloned in the voice from reference_path.
+
+    exaggeration/cfg_weight/temperature are Chatterbox's own tunable
+    generation params, exposed here (not just hardcoded) so callers can
+    A/B test without editing source:
+      - exaggeration: emotional/vocal dynamics. Chatterbox default is 0.5
+        (flatter, more neutral read); 0.65-0.8 reads as more animated and
+        engaging for short-form content. Values close to 1.0 can start
+        sounding overdone/unnatural.
+      - cfg_weight: Chatterbox default is 0.5. Lowering it (~0.3) tends to
+        speed up pacing and reduce the robotic, evenly-spaced cadence a
+        cloned voice can otherwise have.
+      - temperature: Chatterbox default is 0.8. Slightly lower (~0.75)
+        trades a little variety for more consistency across chunks.
+    These defaults match what was already hardcoded here before this was
+    a parameter — this refactor doesn't change existing output, it just
+    makes the values overridable instead of requiring a source edit.
+    Nobody involved (including the assistant) can judge "sounds more
+    natural" without actually listening — these are a reasonable
+    community-informed starting point, not a verified-by-ear best answer.
+    """
     if model is None:
         print("Loading Chatterbox model...")
         model = ChatterboxTTS.from_pretrained(device=device)
@@ -92,17 +115,12 @@ def generate_voiceover(
     audio_segments = []
     for i, chunk in enumerate(chunks, 1):
         print(f"  [{i}/{len(chunks)}] {chunk[:60]}...")
-        
-        # KEY TUNING HIGHLIGHTS FOR REALISM:
-        # - exaggeration: Boosts vocal dynamics and variance (0.65 - 0.8 is great for engaging videos).
-        # - cfg_weight: Lowering to 0.3 allows natural speech velocity and less robotic cadence pacing.
-        # - temperature: Slightly raised if supported by the model configuration to diversify token selection.
         wav = model.generate(
-            chunk, 
+            chunk,
             audio_prompt_path=reference_path,
-            exaggeration=0.7,
-            cfg_weight=0.3,
-            temperature=0.75
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            temperature=temperature,
         )
         audio_segments.append(wav)
 

@@ -70,6 +70,15 @@ mcp = FastMCP("dev-video-pipeline")
 _tts_model: ChatterboxTTS | None = None
 _tts_model_lock = threading.Lock()
 
+# Separate from _tts_model_lock, which only guards the one-time lazy load.
+# generate() itself must also be serialized — two generate_voiceover jobs
+# started close together would otherwise both call model.generate() on
+# the SAME shared instance concurrently. Confirmed in webapp.py (which
+# shares this exact pattern) with a real run that sat at 150-200% CPU for
+# 25+ minutes without producing output — Chatterbox/PyTorch on MPS isn't
+# safe for concurrent multi-threaded inference on one model instance.
+_generation_lock = threading.Lock()
+
 
 def _get_tts_model(device: str = "mps") -> ChatterboxTTS:
     global _tts_model
@@ -185,12 +194,18 @@ def generate_voiceover(script_text: str, reference_path: str = "aditya-voice.m4a
         # for the full model-load time and defeating the entire point of
         # _start_job. Confirmed this exact mistake with a real timed run
         # (18.7s to "return immediately") before catching it here.
-        return _generate_voiceover(
-            script_text,
-            reference_path=str(ref),
-            output_path=str(output_path),
-            model=_get_tts_model(),
-        )
+        model = _get_tts_model()
+        # _generation_lock serializes concurrent generate_voiceover calls —
+        # see the lock's own definition for why this is load-bearing, not
+        # defensive: two overlapping calls sharing one model instance is a
+        # real, reproduced failure mode, not a hypothetical one.
+        with _generation_lock:
+            return _generate_voiceover(
+                script_text,
+                reference_path=str(ref),
+                output_path=str(output_path),
+                model=model,
+            )
 
     return _start_job(_do_generate)
 
@@ -250,6 +265,80 @@ def render_video_with_shots(shots: list[Shot], audio_path: str, topic: str = "")
     rendered .mp4. Confirm the voiceover sounds right before calling this."""
     return _start_job(
         render_shots_to_video,
+        [shot.model_dump() for shot in shots],
+        audio_path,
+        topic=topic,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# INSTAGRAM REEL TOOLS
+# ─────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def hunt_assets(script_text: str, slug: str) -> str:
+    """Find and download visual assets (images/videos from Pexels) for each
+    shot in the provided script. Uses an LLM to extract one visual keyword
+    per shot, then fetches the best Pexels match and downloads it to
+    output/<slug>/assets/.
+
+    Returns a job_id immediately — asset fetching runs in the background
+    (LLM call + multiple HTTP downloads can take 30–60s). Poll
+    check_job_status(job_id); when done, the result is the path to the
+    saved asset_manifest.json file.
+
+    Requires PEXELS_API_KEY in .env (free key at https://www.pexels.com/api/).
+    The slug should match the one used for the corresponding voiceover/render
+    calls so all output lands in the same output/<slug>/ folder."""
+    from asset_hunter import run_asset_pipeline  # lazy import — heavy deps
+
+    def _do_hunt() -> str:
+        manifest = run_asset_pipeline(script_text, slug)
+        manifest_path = PROJECT_ROOT / "output" / slug / "asset_manifest.json"
+        return str(manifest_path)
+
+    return _start_job(_do_hunt)
+
+
+class ReelShot(BaseModel):
+    """One shot of an Instagram Reel — narration text plus optional asset
+    info from the asset manifest. Pass the merged output from hunt_assets."""
+
+    text: str = Field(description="Spoken narration line for this shot (shown as caption).")
+    start: float = Field(description="Screenplay start time in seconds (used as relative pacing weight).")
+    end: float = Field(description="Screenplay end time in seconds (used as relative pacing weight).")
+    assetFile: str | None = Field(default=None, description="Remotion-relative path to the asset, e.g. 'assets/<slug>/shot-00-code.mp4'.")
+    assetType: str = Field(default="placeholder", description="'photo', 'video', or 'placeholder'.")
+    credit: str | None = Field(default=None, description="Photographer/videographer name for attribution.")
+    code: str | None = Field(default=None, description="Optional code snippet to overlay (same as ScreenplayVideo).")
+    language: str = Field(default="js", description="Code language label.")
+
+
+@mcp.tool()
+def render_instagram_reel(
+    shots: list[ReelShot],
+    audio_path: str,
+    topic: str = "",
+) -> str:
+    """Start rendering a vertical Instagram Reel (1080×1920) from a structured
+    shot list with visual assets and a generated voiceover.
+
+    Each shot should have assetFile/assetType filled in from hunt_assets
+    results. Assets must already exist at the assetFile paths inside
+    Remotion's public/ folder — hunt_assets handles staging automatically.
+
+    Use this AFTER:
+      1. generate_voiceover → job done → audio_path
+      2. hunt_assets → job done → asset manifest loaded
+
+    Runs in the BACKGROUND — returns a job_id immediately. Poll
+    check_job_status(job_id); when done, the result is the path to the
+    rendered reel.mp4. The reel renders through the InstagramReel
+    composition (Ken Burns backgrounds, karaoke captions, progress bar)."""
+    from render import render_reel  # lazy import avoids circular at module load
+
+    return _start_job(
+        render_reel,
         [shot.model_dump() for shot in shots],
         audio_path,
         topic=topic,
