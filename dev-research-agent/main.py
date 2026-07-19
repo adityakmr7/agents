@@ -23,7 +23,7 @@ def slugify(text: str) -> str:
     return slug[:50]
 
 
-def create_video_assets(topic: str, reference_path: str = "osho-voice.mp3") -> dict:
+def create_video_assets(topic: str, reference_path: str = "aditya-voice.m4a") -> dict:
     slug = slugify(topic)
     out_dir = Path(f"output/{slug}")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -57,8 +57,8 @@ def main() -> None:
     parser.add_argument("topic", help="Video topic, e.g. \"React Navigation vs Expo Router\"")
     parser.add_argument(
         "--voice",
-        default="osho-voice.mp3",
-        help="Reference clip to clone the voice from (default: osho-voice.mp3)",
+        default="aditya-voice.m4a",
+        help="Reference clip to clone the voice from (default: aditya-voice.m4a)",
     )
     parser.add_argument(
         "--no-render",

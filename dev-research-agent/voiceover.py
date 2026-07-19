@@ -26,9 +26,17 @@ def clean_script_for_voiceover(script: str) -> str:
     # Must run before line-based cleanup, since code can span multiple lines.
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
 
+    # Shot-list headers — "[0:00–0:03] HOOK" or "[0:28-0:36] THE TRAP — sort()"
+    text = re.sub(
+        r"^[ \t]*\[\d{1,2}:\d{2}\s*[–-]\s*\d{1,2}:\d{2}\][ \t]*.*$",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
+
     # Whole-line stage directions: a line that's just a parenthetical,
     # optionally bolded — e.g. **(Video opens with...)**
-    text = re.sub(r"^\s*\*{0,2}\(.*?\)\*{0,2}\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^[ \t]*\*{0,2}\(.*?\)\*{0,2}[ \t]*$", "", text, flags=re.MULTILINE)
 
     # Section labels at the start of a line — **Hook:**, **Point 1:**,
     # **Closing:** — strip the label, keep whatever spoken text follows it
@@ -40,6 +48,9 @@ def clean_script_for_voiceover(script: str) -> str:
 
     # Inline code — `useTransition` -> useTransition (keep the word, not the backticks)
     text = re.sub(r"`([^`]*)`", r"\1", text)
+
+    # A whole line wrapped in straight or curly double-quotes
+    text = re.sub(r'^[ \t]*["“](.*)["”][ \t]*$', r"\1", text, flags=re.MULTILINE)
 
     # Collapse to clean, single-spaced narration text
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -64,13 +75,15 @@ def split_into_chunks(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
 
 def generate_voiceover(
     script_text: str,
-    reference_path: str = "osho-voice.mp3",
+    reference_path: str = "aditya-voice.m4a",
     output_path: str = "voiceover.wav",
     device: str = "mps",
+    model: ChatterboxTTS | None = None,
 ) -> str:
     """Generate a voiceover from script text, cloned in the voice from reference_path."""
-    print("Loading Chatterbox model...")
-    model = ChatterboxTTS.from_pretrained(device=device)
+    if model is None:
+        print("Loading Chatterbox model...")
+        model = ChatterboxTTS.from_pretrained(device=device)
 
     narration = clean_script_for_voiceover(script_text)
     chunks = split_into_chunks(narration)
@@ -79,7 +92,18 @@ def generate_voiceover(
     audio_segments = []
     for i, chunk in enumerate(chunks, 1):
         print(f"  [{i}/{len(chunks)}] {chunk[:60]}...")
-        wav = model.generate(chunk, audio_prompt_path=reference_path)
+        
+        # KEY TUNING HIGHLIGHTS FOR REALISM:
+        # - exaggeration: Boosts vocal dynamics and variance (0.65 - 0.8 is great for engaging videos).
+        # - cfg_weight: Lowering to 0.3 allows natural speech velocity and less robotic cadence pacing.
+        # - temperature: Slightly raised if supported by the model configuration to diversify token selection.
+        wav = model.generate(
+            chunk, 
+            audio_prompt_path=reference_path,
+            exaggeration=0.7,
+            cfg_weight=0.3,
+            temperature=0.75
+        )
         audio_segments.append(wav)
 
     full_audio = torch.cat(audio_segments, dim=-1)
@@ -89,11 +113,10 @@ def generate_voiceover(
 
 
 if __name__ == "__main__":
-    # Use an actual full-length script here, not a short test sentence —
-    # the whole point is confirming chunking works on realistic length.
+    # Script injected with paralinguistic tags [chuckle] and natural filler text for the Turbo variant
     script = (
-        "Avoid janky animations and improve user experience with useTransition in React! "
-        "When using useTransition, your component will render twice - once immediately, "
+        "Avoid janky animations and improve user experience with useTransition in React! [chuckle] "
+        "When using useTransition, your component will actually render twice... once immediately, "
         "and again after the transition. This happens because React needs to reconcile "
         "the new state before applying it, ensuring a smooth update. Mastering "
         "useTransition will help you optimize your React app for better performance "

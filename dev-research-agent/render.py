@@ -64,6 +64,38 @@ def render_video(topic_result: dict) -> str:
     return str(out_path)
 
 
+def _run_remotion_render(composition_id: str, out_path: Path, props_path: Path) -> None:
+    """Shared by the MCP-tool render entry points below (render_video()
+    above still calls npx directly — untouched, still correct for its
+    existing terminal-invoked call sites).
+
+    `npx` here is installed via nvm, which only loads through .zprofile on
+    a LOGIN shell — a bare subprocess env (what a GUI-launched MCP host
+    like Claude Desktop gives this process) has no npx on PATH at all.
+    Confirmed: `env -i which npx` fails, `zsh -lc 'which npx'` succeeds.
+    Shelling out through `zsh -lc` sources .zprofile/nvm so this works
+    regardless of the parent process's own PATH.
+    """
+    cmd = "npx remotion render {} {} --props={}".format(
+        shlex.quote(composition_id),
+        shlex.quote(str(out_path)),
+        shlex.quote(str(props_path)),
+    )
+    result = subprocess.run(
+        ["zsh", "-lc", cmd],
+        cwd=REMOTION_PROJECT,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        print("❌ Render failed:")
+        print(result.stderr)
+        raise RuntimeError("Remotion render failed")
+
+    print(f"✅ Rendered {out_path}")
+
+
 def render_from_script_and_audio(script_text: str, audio_path: str, slug: str | None = None) -> str:
     """MCP-tool entry point: same copy/props/render steps as render_video()
     above, but starting from raw script text + an audio file path instead of
@@ -101,28 +133,56 @@ def render_from_script_and_audio(script_text: str, audio_path: str, slug: str | 
     out_path = out_dir / "video.mp4"
     print(f"Rendering video to {out_path}...")
 
-    # `npx` here is installed via nvm, which only loads through .zprofile
-    # on a LOGIN shell — a bare subprocess env (which is what a GUI-launched
-    # MCP host like Claude Desktop gives this process) has no npx on PATH
-    # at all. Confirmed: `env -i which npx` fails, `zsh -lc 'which npx'`
-    # succeeds. Shelling out through `zsh -lc` sources .zprofile/nvm so
-    # this works regardless of the parent process's own PATH.
-    cmd = "npx remotion render {} {} --props={}".format(
-        shlex.quote(COMPOSITION_ID),
-        shlex.quote(str(out_path)),
-        shlex.quote(str(props_path)),
-    )
-    result = subprocess.run(
-        ["zsh", "-lc", cmd],
-        cwd=REMOTION_PROJECT,
-        capture_output=True,
-        text=True,
-    )
+    _run_remotion_render(COMPOSITION_ID, out_path, props_path)
+    return str(out_path)
 
-    if result.returncode != 0:
-        print("❌ Render failed:")
-        print(result.stderr)
-        raise RuntimeError("Remotion render failed")
 
-    print(f"✅ Rendered {out_path}")
+def render_shots_to_video(
+    shots: list[dict],
+    audio_path: str,
+    topic: str = "",
+    slug: str | None = None,
+) -> str:
+    """MCP-tool entry point for structured screenplays: each shot carries
+    its own narration text, an optional code snippet, and the
+    screenwriter's intended relative timing (start/end in seconds — used
+    as a pacing WEIGHT, not a literal clock time, since there's no
+    word-level transcription alignment in this pipeline yet; see
+    ScreenplayVideo.tsx for the full reasoning). Renders through the
+    ScreenplayVideo composition instead of NarratedVideo.
+
+    shots: list of {"text": str, "code": str | None, "language": str | None,
+                     "start": float, "end": float}
+    """
+    audio_src = Path(audio_path)
+    slug = slug or audio_src.stem
+    audio_filename = f"{slug}.wav"
+
+    dest = REMOTION_PROJECT / "public" / audio_filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(audio_src, dest)
+    print(f"Copied voiceover to {dest}")
+
+    # Same narration cleaning as every other entry point — strips markdown
+    # so a shot's spoken line doesn't show literal "**bold**" on screen.
+    # Code snippets aren't touched — they're a separate field, not
+    # embedded in the narration text.
+    cleaned_shots = [
+        {**shot, "text": clean_script_for_voiceover(shot["text"])}
+        for shot in shots
+    ]
+
+    props_path = REMOTION_PROJECT / f"{slug}-props.json"
+    props_path.write_text(json.dumps({
+        "audioFileName": audio_filename,
+        "shots": cleaned_shots,
+        "topic": topic or slug.replace("-", " ").replace("_", " ").title(),
+    }))
+
+    out_dir = Path(__file__).resolve().parent / "output" / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "video.mp4"
+    print(f"Rendering video to {out_path}...")
+
+    _run_remotion_render("ScreenplayVideo", out_path, props_path)
     return str(out_path)

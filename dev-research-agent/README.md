@@ -2,8 +2,8 @@
 
 Turns a topic into a finished vertical (1080×1920) video: researched
 script, cloned-voice narration, rendered motion-graphic captions. Two
-sibling projects, two ways to run it — see [CLAUDE.md](CLAUDE.md) for the
-full architecture and known gotchas; this doc is just setup.
+sibling projects, three ways to run it — see [CLAUDE.md](CLAUDE.md) for
+the full architecture and known gotchas; this doc is just setup.
 
 ```
 parent-folder/
@@ -11,16 +11,19 @@ parent-folder/
   motion/                <- Remotion renderer (TypeScript/React)
 ```
 
-## Two ways to use it
+## Three ways to use it
 
-| | Batch pipeline | Interactive MCP tools |
-|---|---|---|
-| **Entry point** | `videogen` CLI / `main.py` | Claude Desktop |
-| **Who drafts/critiques the script** | A second LLM (Gemini/Ollama), unattended | Claude, live in conversation |
-| **Use when** | Scripted/unattended runs | You're already talking to Claude Desktop |
+| | Batch pipeline | Interactive MCP tools | Local web app |
+|---|---|---|---|
+| **Entry point** | `videogen` CLI / `main.py` | Claude Desktop | `voiceover-app` / `webapp.py` |
+| **Who drafts/critiques the script** | A second LLM (Gemini/Ollama), unattended | Claude, live in conversation | You (paste a finished script) |
+| **Use when** | Scripted/unattended runs | You're already talking to Claude Desktop | You just want a voiceover fast, no MCP reliability concerns |
+| **Produces** | Script + voiceover + video | Script + voiceover + video | Voiceover only |
 
-Both share the same mechanical steps underneath (search, TTS, render), so
-most of this setup applies to either one.
+All three share the same mechanical steps underneath (search, TTS,
+render), so most of this setup applies to all of them. The web app is the
+simplest and most reliable path if you just need a voiceover from
+something you've already written — see "Local web app" below.
 
 ---
 
@@ -38,9 +41,9 @@ most of this setup applies to either one.
   - `OLLAMA_MODEL` + a running [Ollama](https://ollama.com) — optional,
     only used as the batch pipeline's fallback if Gemini fails
 - **A reference voice clip** for cloning (~5s, clean single-speaker audio).
-  Note: the code's default filename is `my_voice.wav`, but that file may
-  not actually exist in your checkout — either add one, or pass
-  `reference_path` explicitly (see "Known gaps" below).
+  The default filename both entry points use is `aditya-voice.m4a`, placed
+  in the project root — swap in your own clip under that name, or pass
+  `reference_path` explicitly to use a different file/name.
 
 ---
 
@@ -124,7 +127,9 @@ run on Windows:
    Change to your actual Windows path to the sibling `motion/` folder,
    e.g. `Path(r"C:\Users\you\dev\motion")`.
 
-3. **`render.py`**, inside `render_from_script_and_audio()` — the
+3. **`render.py`**, inside `_run_remotion_render()` (shared by both
+   `render_from_script_and_audio()` and `render_shots_to_video()`, i.e.
+   the MCP `render_video` and `render_video_with_shots` tools) — the
    subprocess call shells out via `["zsh", "-lc", cmd]`. That workaround
    exists specifically because macOS's nvm only loads through `.zprofile`
    on a *login* shell, which a GUI-launched process (Claude Desktop) skips
@@ -134,13 +139,13 @@ run on Windows:
    plain subprocess call instead:
    ```python
    result = subprocess.run(
-       ["npx", "remotion", "render", COMPOSITION_ID, str(out_path), f"--props={props_path}"],
+       ["npx", "remotion", "render", composition_id, str(out_path), f"--props={props_path}"],
        cwd=REMOTION_PROJECT,
        capture_output=True,
        text=True,
    )
    ```
-   (This only affects the MCP `render_video` tool. The original batch
+   (This only affects the two MCP render tools. The original batch
    `render_video(topic_result)` already calls `npx` directly and doesn't
    need this change.)
 
@@ -158,10 +163,32 @@ There's no Windows equivalent of the `videogen` bash wrapper — just run
 
 ## Claude Desktop — MCP tools setup (both platforms)
 
-This is what makes `search_dev_topic`, `generate_voiceover`, and
-`render_video` available as tools Claude can call directly in
-conversation. **Claude Desktop only** — the stdio transport spawns a
-local subprocess, which claude.ai (web) and the mobile apps can't do.
+This is what makes `search_dev_topic`, `generate_voiceover`,
+`render_video`, and `render_video_with_shots` available as tools Claude
+can call directly in conversation. **Claude Desktop only** — the stdio
+transport spawns a local subprocess, which claude.ai (web) and the mobile
+apps can't do.
+
+- `render_video` — flat script text, auto-split into sentence chunks.
+  Good default for a straightforward explainer.
+- `render_video_with_shots` — for content with distinct beats and code
+  overlays (a coding-tips reel: hook, method + snippet, method + snippet,
+  trap + snippet, CTA). Each shot is `{text, code?, language?, start, end}`
+  — `start`/`end` set relative pacing, not literal timestamps (see
+  CLAUDE.md for why). Generate the voiceover from the shots' narration
+  text first, then pass the real audio path here.
+
+**`generate_voiceover`, `render_video`, and `render_video_with_shots` are
+async** — they return a `job_id` immediately, not the finished result. Poll
+`check_job_status(job_id)` (returns `"running"`, `"done: <path>"`, or
+`"error: <message>"`) every ~15-20s until it's done. This isn't optional —
+without it, these tools reliably hit MCP's per-call timeout on realistic
+content (confirmed: a real call errored with `MCP error -32001: Request
+timed out` after several minutes, while the server kept working and
+finished successfully ~10 minutes later in the background). You don't need
+to manage this yourself in conversation — just ask Claude to generate the
+voiceover/render the video, and it calls `check_job_status` on your behalf
+until the job's done.
 
 1. Find your config file:
    - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -203,13 +230,41 @@ local subprocess, which claude.ai (web) and the mobile apps can't do.
 
 ---
 
+## Local web app (both platforms)
+
+The simplest, most reliable path to a voiceover — no Claude, no MCP, just
+a browser talking to a local Flask process:
+
+```bash
+cd dev-research-agent
+python3 webapp.py
+```
+
+or, if you've symlinked the launcher onto PATH (macOS/Linux, same pattern
+as `videogen`):
+
+```bash
+chmod +x voiceover-app
+ln -sf "$(pwd)/voiceover-app" ~/.local/bin/voiceover-app
+voiceover-app
+```
+
+Opens `http://127.0.0.1:5959` in your default browser automatically.
+Paste a finished script, optionally change the reference voice filename
+(default `aditya-voice.m4a`), click **Generate voiceover**. First
+generation in a session includes the model-load cost (~90-120s observed);
+later generations in the same running session are much faster (~20s
+observed) since the model stays loaded in memory. Result plays back
+in-page with a download link.
+
+Windows: same `python3 webapp.py` (or `python webapp.py`) — no
+platform-specific edits needed here, since this path never shells out to
+`npx`/Remotion at all, so the Windows manual-edit notes above don't apply.
+
+---
+
 ## Known gaps
 
-- **`my_voice.wav` doesn't exist by default.** Only `osho-voice.mp3` is
-  actually in the project (used as the CLI's default reference clip). The
-  MCP `generate_voiceover` tool defaults to `my_voice.wav` and will raise
-  a clear `FileNotFoundError` if you don't either add that file or pass
-  `reference_path` explicitly.
 - **Windows path is docs-only, not yet tested.** The three edits above are
   what the code needs to run on Windows, based on reading the code, not a
   verified Windows run — the macOS path has been tested end to end

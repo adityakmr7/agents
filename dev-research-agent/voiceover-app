@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Launches webapp.py with this project's venv, regardless of the caller's
+# cwd — see videogen for the same symlink-resolution reasoning.
+set -e
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+cd "$DIR"
+exec "$DIR/venv/bin/python3" "$DIR/webapp.py"
